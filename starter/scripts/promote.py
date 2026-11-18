@@ -17,6 +17,7 @@ Run:
 import yaml
 from dotenv import load_dotenv
 from mlflow.tracking import MlflowClient
+import os 
 
 load_dotenv()
 
@@ -33,7 +34,22 @@ def get_latest_f1(client: MlflowClient, experiment_name: str) -> tuple[str, floa
     # TODO: Look up the experiment by name, search for the most recent run,
     # and return its run_id and f1_weighted metric value.
     # Documentation: https://mlflow.org/docs/latest/api_reference/python_api/mlflow.client.html
-    raise NotImplementedError
+    experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        raise ValueError(f"Experiment '{experiment_name}' not found")
+    
+    runs = client.search_runs(
+        experiment_ids=[experiment.experiment_id],
+        filter_string="attributes.status = 'FINISHED'",
+        order_by=["attributes.start_time DESC"],
+        max_results=1,
+    )
+
+    run = runs[0]
+    f1 = run.data.metrics.get("f1_weighted")
+    if f1 is None:
+        raise ValueError(f"Run {run.info.run_id} has no 'f1_weighted' metric")
+    return run.info.run_id, f1
 
 
 def promote(client: MlflowClient, model_name: str):
@@ -42,7 +58,15 @@ def promote(client: MlflowClient, model_name: str):
     # Documentation: https://mlflow.org/docs/latest/ml/model-registry/
 
     # get the latest version of the model
-    raise NotImplementedError
+    versions = client.search_model_versions(f"name='{model_name}'")
+    if not versions:
+        raise ValueError(f"No versions registered for '{model_name}'")
+
+    latest_version = max(int(mv.version) for mv in versions)
+    client.set_registered_model_alias(
+        name=model_name, alias="production", version=str(latest_version)
+    )
+    print(f"Promoted {model_name} v{latest_version} to @production")
 
 
 def main():
@@ -50,7 +74,19 @@ def main():
     # 1- load the threshold from params.yaml,
     # 2- call get_latest_f1(),
     # 3- call promote() only if the threshold is met.
-    raise NotImplementedError
+    
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME") or "finserv-sentiment"
+    model_name = os.getenv("MODEL_NAME") or "finserv-sentiment-model"
+
+    client = MlflowClient()  # uses MLFLOW_TRACKING_URI
+    threshold = load_params()["f1_threshold"]
+    run_id, f1 = get_latest_f1(client, experiment_name)
+
+    print(f"Latest run {run_id}: f1_weighted={f1:.4f} (threshold={threshold})")
+    if f1 >= threshold:
+        promote(client, model_name)
+    else:
+        print(f"Model does not qualify: f1_weighted {f1:.4f} < {threshold}. Not promoted.")
 
 
 if __name__ == "__main__":
