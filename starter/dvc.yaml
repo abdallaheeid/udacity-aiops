@@ -7,3 +7,27 @@
 # cleaning steps. You can use the provided script `clean_data.py` for this purpose
 # Makse sure to use parameters to set values of different hyperparameters in the scripts
 # Documentation : https://doc.dvc.org/user-guide/pipelines/defining-pipelines
+stages:
+  prepare:
+    cmd: python scripts/load_data.py
+    deps:
+      - scripts/load_data.py
+    params:
+      - prepare.data_dir
+      - prepare.test_size
+      - prepare.random_seed
+    outs:
+      - ${prepare.data_dir}/train.csv
+      - ${prepare.data_dir}/test.csv
+
+  clean:
+    cmd: python scripts/clean_data.py
+    deps:
+      - scripts/clean_data.py
+      - ${clean.data_dir}/raw_stream.csv 
+    params:
+      - clean.data_dir
+      - clean.min_words
+      - clean.max_words
+    outs:
+      - ${clean.data_dir}/stream.csv
