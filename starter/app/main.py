@@ -12,19 +12,33 @@ import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi import Response
 from pydantic import BaseModel
 from utils import load_classifier
+from time import perf_counter
 
 # TODO (Task 6)
 # Configure the Python logger using basicConfig.
+import logging
+import json 
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from datetime import datetime, timezone
 
+logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 
 # TODO (Task 6)
 # Implement a structured logging helper that emits each log entry as a JSON
 # object containing at least a timestamp, level, and message field.
 def log(level: str, message: str, **kwargs) -> None:
-    pass
+    numeric_level = getattr(logging, level.upper(), logging.INFO)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": logging.getLevelName(numeric_level),
+        "message": message,
+        **kwargs,
+    }
+    logging.log(numeric_level, json.dumps(entry, default=str))
 
 
 # TODO (Task 6)
@@ -34,9 +48,13 @@ def log(level: str, message: str, **kwargs) -> None:
 # 3. A Counter for the total number of prediction errors.
 # Then instrument run_predictions() to update each metric accordingly.
 # Documentation: https://prometheus.io/docs/concepts/metric_types/
-PREDICTION_REQUESTS = None
-PREDICTION_LATENCY = None
-PREDICTION_ERRORS = None
+PREDICTION_REQUESTS = Counter("pred_reqs", "Total Number of Prediction Requests", labelnames=["sentiment"])
+PREDICTION_LATENCY = Histogram(
+    "prediction_latency_ms",
+    "Prediction latency in milliseconds",
+    buckets=[5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+)
+PREDICTION_ERRORS = Counter("pred_errors", "Total Number of Prediction Errors")
 
 load_dotenv()
 
@@ -75,10 +93,10 @@ def run_predictions(texts: list[str]) -> list[PredictionResult]:
     try:
         # TODO (Task 3): Log a warning using log() if any input text exceeds 2000
         # characters — the model will silently truncate it, so this makes it visible.
-
+        
         # TODO (Task 3): Record the start time, run batch inference using
         # classifiers["sentiment"], and compute latency_ms from start to finish.
-
+        
         # TODO (Task 3): Build and return a list of PredictionResult objects from
         # the inference results (each result has "label" and "score" keys).
 
@@ -87,10 +105,29 @@ def run_predictions(texts: list[str]) -> list[PredictionResult]:
 
         # TODO (Task 6): Log each prediction using log() with sentiment, confidence,
         # and latency_ms fields.
-        raise NotImplementedError
+        
+        if any(len(t) > 2000 for t in texts):
+            log("WARNING", "characters - the model will silently truncate it, so this makes it visible.")
+
+        start_time = perf_counter()
+        results = classifiers["sentiment"](texts)
+        end_time = perf_counter()
+        latency_ms = (end_time - start_time) * 1000
+
+        pred_results = [PredictionResult(text=t, sentiment=r["label"], latency_ms=latency_ms, confidence=r["score"]) for t, r in zip(texts, results)]
+        PREDICTION_LATENCY.observe(latency_ms)
+
+        for pr in pred_results:
+            PREDICTION_REQUESTS.labels(sentiment=pr.sentiment).inc()
+            log("INFO", "prediction", sentiment=pr.sentiment, confidence=pr.confidence, latency_ms=pr.latency_ms)
+        
+        return pred_results
+
     except Exception as e:
         # TODO (Task 6): Increment PREDICTION_ERRORS, log the error using log(),
         # then re-raise.
+        PREDICTION_ERRORS.inc()
+        log("ERROR", "prediction failed", error=str(e))
         raise e
 
 
@@ -100,7 +137,7 @@ def run_predictions(texts: list[str]) -> list[PredictionResult]:
 # Documentation: https://prometheus.io/docs/instrumenting/exposition_formats/
 @app.get("/metrics")
 def metrics():
-    raise NotImplementedError
+    Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # TODO: Implement the /health endpoint.
@@ -108,8 +145,9 @@ def metrics():
 # is loaded, and raise an HTTP 503 error when it is not.
 @app.get("/health")
 def health():
-    raise NotImplementedError
-
+    if "sentiment" not in classifiers:
+        raise HTTPException(status_code=503, detail="Model is not loaded")
+    return {"status": "ok"}
 
 # TODO: Implement the POST /predict endpoint.
 # Accept a PredictRequest and return a PredictionResult.
@@ -117,7 +155,11 @@ def health():
 # Return HTTP 422 if the text is empty
 @app.post("/predict", response_model=PredictionResult)
 def predict(request: PredictRequest):
-    raise NotImplementedError
+    if "sentiment" not in classifiers:
+        raise HTTPException(status_code=503, detail="Model is not loaded")
+    if not request.text.strip():
+        raise HTTPException(status_code=422, detail="Text must not be empty")
+    return run_predictions([request.text])[0]
 
 
 # TODO: Implement the POST /predict/batch endpoint.
@@ -126,8 +168,11 @@ def predict(request: PredictRequest):
 # and HTTP 422 if the texts list is empty.
 @app.post("/predict/batch", response_model=list[PredictionResult])
 def predict_batch(request: PredictBatchRequest):
-    raise NotImplementedError
-
+    if "sentiment" not in classifiers:
+        raise HTTPException(status_code=503, detail="Model is not loaded")
+    if not request.texts:
+            raise HTTPException(status_code=422, detail="Text must not be empty")    
+    return run_predictions(request.texts)
 
 if __name__ == "__main__":
     import uvicorn

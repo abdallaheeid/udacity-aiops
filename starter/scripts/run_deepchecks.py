@@ -13,9 +13,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import pandas as pd
 import yaml
 from app.utils import load_classifier
+from deepchecks.nlp import TextData
+from deepchecks.nlp.checks import PredictionDrift, PropertyDrift
 from dotenv import load_dotenv
 
 load_dotenv()
+
+MODEL_CLASSES = ["negative", "neutral", "positive"]
 
 
 def load_params() -> dict:
@@ -59,6 +63,46 @@ def main():
     # If drift exceeds threshold, print an error message and terminate with failure exit code
     # https://docs.deepchecks.com/stable/general/guides/drift_guide.html#text-nlp-checks
 
+    # --- Datasets + NLP properties ---
+    test_dataset = TextData(raw_text=test_texts, task_type="text_classification")
+    stream_dataset = TextData(raw_text=stream_texts, task_type="text_classification")
+
+    test_dataset.calculate_builtin_properties()
+    stream_dataset.calculate_builtin_properties()
+
+    # --- Property drift (Sentiment) ---
+    property_result = PropertyDrift().run(
+        train_dataset=test_dataset, test_dataset=stream_dataset
+    )
+    sentiment_drift = property_result.value["Sentiment"]["Drift score"]
+    print(f"Sentiment property drift: {sentiment_drift:.4f} (threshold={property_drift_threshold})")
+
+    if sentiment_drift > property_drift_threshold:
+        print(f"ERROR: Sentiment property drift {sentiment_drift:.4f} exceeds {property_drift_threshold}")
+        sys.exit(1)
+
+    # --- Prediction drift ---
+    test_preds = run_predictions(classifier, test_texts)
+    stream_preds = run_predictions(classifier, stream_texts)
+
+    prediction_check = PredictionDrift().add_condition_drift_score_less_than(
+        max_allowed_drift_score=prediction_drift_threshold
+    )
+    prediction_result = prediction_check.run(
+        train_dataset=test_dataset,
+        test_dataset=stream_dataset,
+        train_predictions=test_preds,
+        test_predictions=stream_preds,
+        model_classes=MODEL_CLASSES,
+    )
+    prediction_drift = prediction_result.value["Drift score"]
+    print(f"Prediction drift: {prediction_drift:.4f} (threshold={prediction_drift_threshold})")
+
+    if not prediction_result.passed_conditions():
+        print(f"ERROR: Prediction drift {prediction_drift:.4f} exceeds {prediction_drift_threshold}")
+        sys.exit(1)
+
+    print("All drift checks passed.")
 
 if __name__ == "__main__":
     main()

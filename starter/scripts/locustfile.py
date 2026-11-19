@@ -6,7 +6,9 @@ Run: locust -f locustfile.py --host http://localhost:8000
 Then open http://localhost:8089 to configure and start the test.
 """
 
-from locust import HttpUser
+import random
+
+from locust import HttpUser, between, task
 
 SAMPLE_HEADLINES = [
     "The company reported record profits and raised its dividend.",
@@ -27,4 +29,18 @@ class SentimentAPIUser(HttpUser):
     # 3. health_check (weight 1): GET /health
     # Hint: set wait_time to simulate realistic user pacing.
     # Documentation: https://docs.locust.io/en/stable/writing-a-locustfile.html
-    pass
+    wait_time = between(1, 3)
+
+    @task(3)
+    def predict_single(self):
+        self.client.post("/predict", json={"text": random.choice(SAMPLE_HEADLINES)})
+
+    @task(1)
+    def predict_batch(self):
+        self.client.post(
+            "/predict/batch", json={"texts": random.sample(SAMPLE_HEADLINES, 4)}
+        )
+
+    @task(1)
+    def health_check(self):
+        self.client.get("/health")
